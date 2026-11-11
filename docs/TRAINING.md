@@ -1,11 +1,13 @@
 # Entrenamiento — Nitshio
 
-> **Estado: Paso 3 implementado en local; aceptación final pendiente del
-> fine-tune real en Kaggle/Colab.** Todo el pipeline local (dataset combinado de
-> 348 ejemplos, generador sintético, evaluación, versionado, UI, notebook de
-> Colab y carga de GGUF con `--gguf`) está implementado y probado. La T1200 de
-> 4 GB no entrena: el QLoRA se ejecuta en la nube y el GGUF resultante se carga
-> en Ollama local.
+> **Estado: Fase 0 migrada a Qwen3.5-2B; Paso 3 implementado en local y
+> aceptación final pendiente del fine-tune real en Kaggle/Colab.** Todo el
+> pipeline local (dataset combinado de 348 ejemplos, generador sintético,
+> evaluación, versionado, UI, notebook de Colab y carga de GGUF con `--gguf`)
+> está implementado y probado. `nitshio-qwen2b` está activo y evaluado;
+> `nitshio-v2` existe como GGUF de Phi-3.5, pero falta el reentrenamiento sobre
+> Qwen3.5-2B. La T1200 de 4 GB no entrena: el QLoRA se ejecuta en la nube y el
+> GGUF resultante se carga en Ollama local.
 
 ## 1. Decisión principal
 
@@ -14,7 +16,7 @@ Localmente solo se hace inferencia con Ollama y se recibe el GGUF resultante.
 
 Motivos:
 
-- QLoRA de un modelo de 3B no cabe con comodidad en 4 GB.
+- QLoRA de Qwen3.5-2B (o de un Phi-3.5 de 3.8B) no cabe con comodidad en 4 GB.
 - El entrenamiento local bloquea la máquina durante horas.
 - Kaggle/Colab ofrecen GPU gratuita suficiente para QLoRA.
 
@@ -140,7 +142,7 @@ Parámetros de partida en `config/config.yaml`:
 
 ```yaml
 training:
-  hf_model: "microsoft/Phi-3.5-mini-instruct"
+  hf_model: "Qwen/Qwen3.5-2B"
   qlora:
     max_seq_length: 2048
     load_in_4bit: true
@@ -167,7 +169,7 @@ Dry-run local (no requiere GPU ni dependencias de entrenamiento):
 ```
 
 Resultado real: 348 ejemplos, **312 train / 36 val** (split interno 90/10),
-base `microsoft/Phi-3.5-mini-instruct`, QLoRA 4-bit, LoRA r=16, 3 épocas.
+base `Qwen/Qwen3.5-2B`, QLoRA 4-bit, LoRA r=16, 3 épocas.
 
 ### Notebook Colab
 
@@ -213,7 +215,7 @@ Dry-run local validado:
 .\.venv\Scripts\python.exe training\export_gguf.py --adapter-dir training --dry-run
 ```
 
-Devuelve base `microsoft/Phi-3.5-mini-instruct` y cuantización `q4_K_M`.
+Devuelve base `Qwen/Qwen3.5-2B` y cuantización `q4_K_M`.
 
 Después, en local, hay dos caminos:
 
@@ -324,6 +326,21 @@ El reporte completo está en
 `training/eval/reports/eval_20261109_051355.md` (y `.json`). Las métricas de
 `nitshio-v1` quedaron adjuntas en `models/versions.json`.
 
+### Resultado real de la migración a Qwen3.5-2B (2026-11-11)
+
+Mismos 18 prompts, embeddings reales y sin juez:
+
+| Modelo | JSON válido | Emoción | Similitud | Latencia media | Tok/s | Score |
+|---|---:|---:|---:|---:|---:|---:|
+| `nitshio-qwen2b` | 100.0% | 44.4% | 0.673 | 2.74 s | 33.10 | **0.6695** |
+| `nitshio-v1` | 100.0% | 61.1% | 0.660 | 10.43 s | 13.74 | **0.7192** |
+
+`nitshio-qwen2b` es más rápido (2.4× en tokens/s y 3.8× menos latencia), pero
+todavía pierde 0.05 puntos de score por aciertos de emoción. La migración de
+Fase 0 no busca mejorar calidad, sino dejar el pipeline sobre Qwen con
+`think=false`; el fine-tune del Paso 3 debe recuperar la precisión emocional.
+Reporte: `training/eval/reports/eval_20261111_115248.md`.
+
 ### Por qué la evaluación marca 78 s y 5.8 tok/s
 
 La última medición de `scripts/check_models.py --json` dio **17.5 tok/s** para
@@ -390,17 +407,20 @@ Implementado y probado en local:
 - [x] Registro de versiones, activación y rollback seguros.
 - [x] Construcción de Modelfile y `ollama create`.
 - [x] Carga de un GGUF local con `--gguf` y registro `type=gguf`.
+- [x] `nitshio-v2` generado como GGUF de Phi-3.5 y registrado en Ollama local.
 - [x] Scripts de fine-tune QLoRA y exportación GGUF con dry-run.
+- [x] Dry-run de QLoRA y exportación con la base `Qwen/Qwen3.5-2B`.
 - [x] Notebook Colab con `/content`, unzip del proyecto y dataset combinado.
 - [x] UI Gradio construida y arrancada en local.
-- [x] Tests de training en la suite general.
+- [x] Tests de training en la suite general (275 tests totales).
+- [x] Migración a Qwen3.5-2B evaluada con los mismos 18 prompts.
 
 Pendiente para cerrar la aceptación del Paso 3:
 
-- [ ] Ejecutar el notebook en Kaggle/Colab y obtener `nitshio-v2.gguf`.
-- [ ] Crear `nitshio-v2` en Ollama local.
-- [ ] Comparar `v2` contra `v1` y el base con el evaluador real.
-- [ ] Activar `nitshio-v2` y probar rollback con el GGUF real.
+- [ ] Reentrenar sobre Qwen3.5-2B en Kaggle/Colab y obtener el GGUF nuevo.
+- [ ] Crear la versión Qwen en Ollama local.
+- [ ] Comparar esa versión contra `nitshio-v1` y el base con el evaluador real.
+- [ ] Activar la versión Qwen y probar rollback con el GGUF real.
 - [ ] Decidir el umbral de mejora aceptable.
 
 ## 11. Solución rápida de problemas

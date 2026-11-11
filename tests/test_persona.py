@@ -19,7 +19,9 @@ def test_persona_real_carga() -> None:
     persona = cargar_persona(config)
     assert persona.name == "Nitshio"
     assert "tsundere" in persona.system_prompt.lower()
-    assert len(persona.few_shots) >= 8
+    assert "doble fachada" in persona.system_prompt.lower()
+    assert len(persona.few_shots) == 4
+    assert "Ejemplos de tono" not in persona.system_prompt
     assert "angry" in persona.emotions
     assert persona.default_emotion == "neutral"
 
@@ -89,6 +91,16 @@ def test_emociones_config_coinciden_con_parser() -> None:
 
 
 def test_archivos_de_personalidad_existen() -> None:
+    assert (ROOT / "brain" / "persona" / "nitshio_short.md").exists()
+    assert (ROOT / "brain" / "persona" / "few_shots_short.jsonl").exists()
     assert (ROOT / "brain" / "persona" / "nitshio.md").exists()
     assert (ROOT / "brain" / "persona" / "few_shots.jsonl").exists()
     assert (ROOT / "config" / "emotions.yaml").exists()
+
+
+def test_persona_breve_en_rango_de_tokens() -> None:
+    config = cargar_config()
+    persona = cargar_persona(config)
+    # Aproximación conservadora: ~4 caracteres por token en español.
+    tokens_estimados = len(persona.system_prompt) / 4
+    assert 200 <= tokens_estimados <= 300

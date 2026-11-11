@@ -1,7 +1,8 @@
 # Arquitectura — Nitshio
 
 > Documento vivo. Describe los módulos implementados y cómo se conectan.
-> Última actualización: 2026-11-09 (Paso 3, GGUF y Colab).
+> Última actualización: 2026-11-11 (Fase 0: Qwen3.5-2B, `think=false` y
+> residencia de VRAM).
 
 ## 1. Principios
 
@@ -42,8 +43,9 @@
         construir_mensajes(persona + contexto)
                     │
                     ▼
-        OllamaClient.chat_structured()
+        OllamaClient.chat_structured() (think=false)
         JSON Schema + reintentos + reparación + fallback
+        + descarte de thinking/reasoning
                     │
                     ▼
         ParsedResponse {response, emotion}
@@ -81,10 +83,10 @@ si llega una utterance nueva, `TTSManager.stop()` cancela la locución
 | Archivo | Responsabilidad |
 |---|---|
 | `config.py` | Carga YAML + `.env`; resuelve rutas y `OLLAMA_HOST`. |
-| `llm/ollama_client.py` | Única puerta a Ollama. `chat()` y `chat_structured()` con JSON Schema, reintentos y fallback. |
-| `llm/parser.py` | Extrae JSON de texto, repara comas/comillas/saltos, valida con Pydantic y comprueba emociones. |
+| `llm/ollama_client.py` | Única puerta a Ollama. `chat()` y `chat_structured()` con JSON Schema, reintentos y fallback; envía `think` explícito y descarta `thinking`/`reasoning`. |
+| `llm/parser.py` | Extrae JSON de texto, repara comas/comillas/saltos, valida con Pydantic y comprueba emociones; define el aviso de fallback. |
 | `llm/orchestrator.py` | Une memoria, router, herramientas, LLM, avatar y TTS. |
-| `persona/loader.py` | Carga prompt, few-shots y emociones; construye mensajes. |
+| `persona/loader.py` | Carga prompt, few-shots y emociones; construye mensajes. La persona activa es `nitshio_short.md` con 4 few-shots; los archivos largos de Phi se conservan para rollback. |
 | `router/tool_router.py` | Pide al router una decisión `{tool, arguments, confidence, reason}` y la valida. |
 
 **Contrato de salida del LLM:**
@@ -199,7 +201,7 @@ Mensajes VMC:
 | `export_gguf.py` | Fusión de adaptadores LoRA, conversión GGUF y cuantización. |
 | `evaluate.py` | Métricas de JSON, emoción, similitud, latencia, juez opcional y reportes. |
 | `versions.py` | Registro canónico, activación, rollback y métricas por versión. |
-| `build_model.py` | Render del Modelfile (tag o `--gguf` local) y `ollama create`. |
+| `build_model.py` | Render del Modelfile (tag o `--gguf` local) y `ollama create`; decide `TEMPLATE`/stops por `base_family` y permite `--output`. |
 | `service.py` | Lógica de la UI: chat, feedback, correcciones, dataset y versiones. |
 | `ui.py` | Interfaz Gradio con pestañas Chat, Dataset, Versiones y Nube. |
 | `datasets/seed.jsonl` | 348 ejemplos semilla (48 originales + 300 importados), 58 por emoción. |
@@ -227,6 +229,7 @@ export_gguf ──► GGUF f16 ──► q4_K_M
    │
    ▼
 build_model --gguf ──► FROM local + TEMPLATE Phi-3.5 + type=gguf
+build_model (tag Qwen) ──► FROM qwen3.5:2b sin TEMPLATE/stops de Phi
    │
    ▼
 ollama create nitshio-vN ──► evaluate.py ──► versions.py (activar/rollback)
@@ -234,13 +237,15 @@ ollama create nitshio-vN ──► evaluate.py ──► versions.py (activar/ro
 
 La UI nunca lanza QLoRA en la T1200: muestra el comando y el notebook. Las
 correcciones se guardan en JSONL y en ChromaDB para que el cambio sea inmediato
-sin reentrenar.
+sin reentrenar. `--output models/Modelfile.qwen2b` permite generar el Modelfile
+de un tag sin sobrescribir borradores locales; `--gguf` siempre conserva la
+plantilla Phi para los GGUF ya exportados.
 
 ### `scripts/`
 
 | Script | Función |
 |---|---|
-| `check_models.py` | Mide Ollama, modelos, tokens/s, VRAM/RAM y emite veredicto. |
+| `check_models.py` | Mide Ollama, modelos, tokens/s, VRAM/RAM, residencia simultánea de principal + router y emite veredicto. |
 | `download_voice.py` | Descarga la voz Piper configurada. |
 | `test_emotions.py` | Recorre emociones por VMC; `--dry-run` no envía UDP. |
 | `check_docs.py` | Verifica changelog y documentos obligatorios. |
@@ -282,13 +287,14 @@ sin reentrenar.
 ## 7. Estado de pruebas
 
 - Suite unitaria con dobles para audio, VMC, Ollama, Chroma y navegador:
-  **255 tests en verde** (192 del núcleo + 62 de training + 1 de persona).
+  **275 tests en verde** (incluye migración, `think=false`, aviso de fallback y
+  residencia de VRAM).
 - Round-trip real Piper → Moonshine validado en este equipo.
 - Pipeline real de texto con Ollama validado (JSON válido y memoria activa).
 - Micrófono real `USB MIC PRO` abre y captura.
 - TTS real a `CABLE Input` confirmado en `CABLE Output` (RMS 0.123407).
 - Router real con rutas exactas (`config/config.yaml`, listado de `config`,
-  `brain/persona/nitshio.md`).
+  `brain/persona/nitshio_short.md`).
 - Seis emociones VMC confirmadas visualmente y vuelta a neutral.
 - Lip-sync visual confirmado con el proveedor viejo de VSeeFace.
 - Prueba integral de voz (`scripts/test_voice_roundtrip.py`): STT Moonshine,
@@ -307,3 +313,10 @@ sin reentrenar.
   **0.5452** vs **0.4289**; reporte en
   `training/eval/reports/eval_20261109_051355.md` y métricas en
   `models/versions.json`.
+- Migración a Qwen3.5-2B evaluada con los mismos 18 prompts: `nitshio-qwen2b`
+  **0.6695** (JSON 100%, emoción 44.4%, 33.1 tok/s) frente a `nitshio-v1`
+  **0.7192** (JSON 100%, emoción 61.1%, 13.7 tok/s); reporte en
+  `training/eval/reports/eval_20261111_115248.md`.
+- Residencia simultánea en 4 GB: `qwen3.5:2b` ocupa 1808/2793 MB en GPU (el
+  resto pasa a RAM) y `qwen3.5:0.8b` 544 MB; no caben completos. Alternativa
+  recomendada: router en CPU (`num_gpu: 0`) o el mismo modelo como router.

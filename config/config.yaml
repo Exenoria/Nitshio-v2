@@ -16,12 +16,18 @@ ollama:
   host: "http://localhost:11434"
   request_timeout_seconds: 180
   keep_alive: "30m"
+  # Razonamiento extendido de modelos como Qwen3.5. En Fase 0 se desactiva
+  # para que la respuesta llegue directa en JSON y no se mezcle con "thinking".
+  think: false
   models:
     # Base sobre la que se construye la personalidad y el fine-tune.
-    base: "phi3.5:3.8b-mini-instruct-q4_K_M"
+    base: "qwen3.5:2b"
+    # Familia de la base: decide si el Modelfile necesita el TEMPLATE y los
+    # stop de Phi. Para "qwen" (u otra familia) Ollama usa su plantilla propia.
+    base_family: "qwen"
     # Modelo que usa el pipeline en este momento. El gestor de versiones lo
-    # cambia a nitshio-v1, nitshio-v2, etc. al activar una versión.
-    active: "nitshio-v1"
+    # cambia a nitshio-qwen2b, nitshio-v1, etc. al activar una versión.
+    active: "nitshio-qwen2b"
     router: "qwen3.5:0.8b"
     embeddings: "nomic-embed-text:latest"
     vision: "moondream:v2"
@@ -30,7 +36,7 @@ ollama:
       temperature: 0.75
       top_p: 0.9
       repeat_penalty: 1.08
-      # 2048 mantiene Phi-3.5 + KV cache dentro de 4 GB de VRAM.
+      # 2048 mantiene Qwen3.5-2B + KV cache dentro de 4 GB de VRAM.
       # Si tu GPU tiene más memoria, súbelo a 4096/8192.
       num_ctx: 2048
       num_predict: 512
@@ -39,21 +45,25 @@ ollama:
       top_p: 0.9
       num_ctx: 4096
       num_predict: 256
+      # Medición 2026-11-11 en 4 GB: qwen3.5:2b y qwen3.5:0.8b no caben
+      # completos en VRAM (el principal deja ~1 GB en RAM). Descomenta para
+      # mover el router a CPU y liberar VRAM para el modelo de personalidad.
+      # num_gpu: 0
   structured_output:
     retries: 2
     repair_json: true
     fallback_emotion: neutral
 
 persona:
-  system_file: "brain/persona/nitshio.md"
-  few_shots_file: "brain/persona/few_shots.jsonl"
+  # Persona breve para Qwen3.5-2B: identidad, doble fachada, JSON y emociones.
+  system_file: "brain/persona/nitshio_short.md"
+  few_shots_file: "brain/persona/few_shots_short.jsonl"
   emotions_file: "config/emotions.yaml"
   history_turns: 12
   max_context_chars: 12000
   # Los few-shot también están en el Modelfile (MESSAGE), pero se incluyen en
-  # runtime para garantizar el formato. Con num_ctx 2048 el prompt ronda los
-  # 2000 tokens; si la respuesta sale truncada, revisa este ajuste o usa una
-  # GPU con más VRAM para subir num_ctx.
+  # runtime para garantizar el formato. Con la persona breve el prompt baja
+  # mucho de tamaño y deja margen dentro de num_ctx 2048.
   include_few_shots_in_runtime: true
 
 router:
@@ -195,9 +205,9 @@ discord:
 training:
   provider: cloud
   # Tag de Ollama que se usa como base local.
-  base_model: "phi3.5:3.8b-mini-instruct-q4_K_M"
+  base_model: "qwen3.5:2b"
   # Repositorio Hugging Face que se entrena en la nube. No es un tag de Ollama.
-  hf_model: "microsoft/Phi-3.5-mini-instruct"
+  hf_model: "Qwen/Qwen3.5-2B"
   dataset_dir: "training/datasets"
   eval_prompts: "training/eval/prompts.yaml"
   reports_dir: "training/eval/reports"

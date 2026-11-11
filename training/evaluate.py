@@ -413,6 +413,7 @@ def evaluate_model(
         host_ollama(config),
         timeout=float(ollama_cfg.get("request_timeout_seconds", 180)),
         keep_alive=str(ollama_cfg.get("keep_alive", "30m")),
+        think=bool(ollama_cfg.get("think", False)),
     )
     opciones = dict((ollama_cfg.get("options") or {}).get("primary") or {})
     structured = ollama_cfg.get("structured_output") or {}

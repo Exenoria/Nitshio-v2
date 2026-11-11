@@ -1,6 +1,6 @@
 # Solución de problemas — Nitshio
 
-> Última actualización: 2026-11-09 (Paso 3, GGUF y Colab).
+> Última actualización: 2026-11-11 (Fase 0: Qwen3.5-2B, `think=false` y VRAM).
 
 ## Ollama
 
@@ -16,38 +16,48 @@
 2. Revisa `OLLAMA_HOST` en `.env` y `ollama.host` en `config/config.yaml`.
 3. Si usas otra máquina, asegúrate de que el puerto `11434` esté accesible.
 
-### `model 'nitshio-v1' not found`
+### `model 'nitshio-qwen2b' not found`
 
 El modelo activo se declara en `config/config.yaml`. Si no existe:
 
 ```powershell
 ollama list
-ollama create nitshio-v1 -f models/Modelfile
+ollama create nitshio-qwen2b -f models/Modelfile.qwen2b
 ```
 
-O cambia temporalmente `ollama.models.active` al modelo base. Nunca cambies el
-nombre en el código: el proyecto lee el tag del YAML.
+O cambia temporalmente `ollama.models.active` al modelo base (`qwen3.5:2b`).
+Nunca cambies el nombre en el código: el proyecto lee el tag del YAML. Para una
+versión Phi o un GGUF local, usa `training/build_model.py --gguf` y el
+Modelfile generado con `TEMPLATE` explícito.
 
 ### Respuestas lentas
 
 - Si la GPU tiene memoria limitada, mantén `num_ctx: 2048`.
+- En 4 GB, `qwen3.5:2b` y `qwen3.5:0.8b` no caben completos a la vez. Mueve el
+  router a CPU con `ollama.options.router.num_gpu: 0` (comentado en
+  `config/config.yaml`) o usa el mismo modelo como router.
 - No dejes cargados a la vez el modelo principal y el router si no hace falta.
 - Usa `--no-tools` para saltarte el router en pruebas de personalidad.
-- `scripts/check_models.py` mide tokens/s y sugiere alternativas más ligeras.
+- `scripts/check_models.py` mide tokens/s, la residencia simultánea de VRAM y
+  sugiere alternativas más ligeras.
 - La latencia de `training/evaluate.py` no es comparable con los tok/s de
   `check_models.py`: el evaluador usa prompts de ~2000 tokens y respuestas
   largas. Ver la sección de latencia en [TRAINING.md](TRAINING.md).
 
 ### El modelo devuelve texto fuera del JSON o una emoción inválida
 
-El parser reintenta y repara. Si aun así falla, usa el fallback neutral. Para
+El parser reintenta y repara. Si aun así falla, usa el fallback neutral e
+imprime un aviso claro por `stderr`. En Qwen3.5 revisa que
+`ollama.think: false` esté activo: si el modelo mezcla `thinking`/`reasoning`
+con el JSON, el cliente los descarta y el parser activa el fallback. Para
 diagnosticar:
 
 ```powershell
 .\.venv\Scripts\python.exe run.py --mode text --once "Hola" --debug
 ```
 
-Revisa `attempts`, `fallback` y `reparado` en la salida de depuración.
+Revisa `attempts`, `fallback`, `reparado` y las líneas `[crudo N]` de la salida
+de depuración. En `--mode voice --once --debug` también se muestra el crudo.
 
 ## Memoria / ChromaDB
 

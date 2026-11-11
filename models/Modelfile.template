@@ -1,21 +1,27 @@
 # =============================================================================
 # Nitshio — plantilla de Modelfile
 # =============================================================================
-# Generado por scripts/build_model.py. No edites models/Modelfile a mano:
-# edita este template, brain/persona/nitshio.md, brain/persona/few_shots.jsonl
-# o config/config.yaml.
+# Generado por training/build_model.py. No edites models/Modelfile a mano:
+# edita este template o la persona y los few-shots configurados en
+# config/config.yaml.
 #
 # Placeholders (se sustituyen al generar; no editar a mano):
-#   BASE_MODEL      -> ollama.models.base
-#   SYSTEM_PROMPT   -> brain/persona/nitshio.md
+#   BASE_MODEL      -> ollama.models.base (o la ruta de --gguf)
+#   SYSTEM_PROMPT   -> persona.system_file
 #   PARAMETERS      -> parámetros de config.ollama.options.primary
-#   MESSAGES        -> ejemplos MESSAGE user/assistant
+#   MESSAGES        -> ejemplos MESSAGE user/assistant de persona.few_shots_file
+#
+# Los bloques PHI_TEMPLATE y PHI_STOPS solo se incluyen cuando
+# ollama.models.base_family es "phi" o cuando se construye desde un GGUF local
+# con --gguf. Para Qwen (u otras familias) Ollama usa su propia plantilla y sus
+# propios tokens de parada.
 # =============================================================================
 
 FROM __BASE_MODEL__
 
 SYSTEM """__SYSTEM__"""
 
+# >>> PHI_TEMPLATE
 TEMPLATE """{{ if .System }}<|system|>
 {{ .System }}<|end|>
 {{ end }}{{ if .Prompt }}<|user|>
@@ -23,7 +29,15 @@ TEMPLATE """{{ if .System }}<|system|>
 {{ end }}<|assistant|>
 {{ .Response }}<|end|>
 """
+# <<< PHI_TEMPLATE
 
 __PARAMETERS__
+
+# >>> PHI_STOPS
+PARAMETER stop "<|system|>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|end|>"
+PARAMETER stop "<|assistant|>"
+# <<< PHI_STOPS
 
 __MESSAGES__

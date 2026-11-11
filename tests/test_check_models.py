@@ -197,3 +197,174 @@ def test_parar_modelo_ignora_errores(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(check_models.subprocess, "run", fake_run)
 
     check_models.parar_modelo("nitshio-v1")
+
+
+class _OllamaResidencia:
+    def __init__(
+        self, cargados: list[dict], *, error: Exception | None = None
+    ) -> None:
+        self.cargados = cargados
+        self.error = error
+        self.llamadas: list[str] = []
+
+    def generate(self, modelo: str, prompt: str, **kwargs: object) -> dict:
+        self.llamadas.append(modelo)
+        if self.error:
+            raise self.error
+        return {}
+
+    def loaded(self) -> list[dict]:
+        return self.cargados
+
+
+def _gpu(total: int = 4096, used: int = 200) -> dict:
+    return {
+        "name": "T1200",
+        "vram_total_mb": total,
+        "vram_used_mb": used,
+        "util_percent": 10,
+    }
+
+
+def _cargado(nombre: str, size_gb: float, vram_gb: float) -> dict:
+    return {
+        "name": nombre,
+        "size": int(size_gb * 1024**3),
+        "size_vram": int(vram_gb * 1024**3),
+    }
+
+
+def test_residencia_simultanea_caben_juntos() -> None:
+    ollama = _OllamaResidencia(
+        [
+            _cargado("qwen3.5:2b", 2.0, 2.0),
+            _cargado("qwen3.5:0.8b", 1.0, 1.0),
+        ]
+    )
+
+    resultado = check_models.probar_residencia_simultanea(
+        ollama,  # type: ignore[arg-type]
+        {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        keep_alive="5m",
+        gpu=_gpu(),
+    )
+
+    assert resultado["cargados_juntos"] is True
+    assert resultado["caben_juntos"] is True
+    assert resultado["combinado_vram_mb"] == pytest.approx(3072.0)
+    assert len(ollama.llamadas) == 2
+
+
+def test_residencia_simultanea_router_en_cpu_no_cabe() -> None:
+    ollama = _OllamaResidencia(
+        [
+            _cargado("qwen3.5:2b", 2.0, 2.0),
+            _cargado("qwen3.5:0.8b", 1.0, 0.0),
+        ]
+    )
+
+    resultado = check_models.probar_residencia_simultanea(
+        ollama,  # type: ignore[arg-type]
+        {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        keep_alive="5m",
+        gpu=_gpu(),
+    )
+
+    assert resultado["cargados_juntos"] is True
+    assert resultado["caben_juntos"] is False
+    assert "CPU" in resultado["motivo"]
+
+
+def test_residencia_simultanea_ollama_expulsa_uno() -> None:
+    ollama = _OllamaResidencia([_cargado("qwen3.5:2b", 2.0, 2.0)])
+
+    resultado = check_models.probar_residencia_simultanea(
+        ollama,  # type: ignore[arg-type]
+        {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        keep_alive="5m",
+        gpu=_gpu(),
+    )
+
+    assert resultado["cargados_juntos"] is False
+    assert resultado["caben_juntos"] is False
+    assert "no mantuvo ambos" in resultado["motivo"]
+
+
+def test_residencia_simultanea_sin_gpu() -> None:
+    ollama = _OllamaResidencia(
+        [
+            _cargado("qwen3.5:2b", 2.0, 0.0),
+            _cargado("qwen3.5:0.8b", 1.0, 0.0),
+        ]
+    )
+
+    resultado = check_models.probar_residencia_simultanea(
+        ollama,  # type: ignore[arg-type]
+        {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        keep_alive="5m",
+        gpu=None,
+    )
+
+    assert resultado["caben_juntos"] is False
+    assert "GPU" in resultado["motivo"]
+
+
+def test_residencia_simultanea_error_de_carga() -> None:
+    ollama = _OllamaResidencia([], error=check_models.OllamaError("boom"))
+
+    resultado = check_models.probar_residencia_simultanea(
+        ollama,  # type: ignore[arg-type]
+        {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        keep_alive="5m",
+        gpu=_gpu(),
+    )
+
+    assert resultado["cargados_juntos"] is False
+    assert "No se pudo cargar" in resultado["motivo"]
+
+
+def test_veredicto_propone_router_en_cpu_y_mismo_modelo() -> None:
+    perfiles = [
+        {
+            "rol": "base",
+            "modelo": "qwen3.5:2b",
+            "tokens_por_segundo": 25,
+            "latencia_s": 2,
+            "json_valido": True,
+        },
+        {
+            "rol": "router",
+            "modelo": "qwen3.5:0.8b",
+            "tokens_por_segundo": 80,
+            "latencia_s": 1,
+            "json_valido": True,
+        },
+    ]
+    residencia = {
+        "roles": {"base": "qwen3.5:2b", "router": "qwen3.5:0.8b"},
+        "modelos": [{"name": "qwen3.5:2b"}, {"name": "qwen3.5:0.8b"}],
+        "cargados_juntos": True,
+        "caben_juntos": False,
+        "motivo": "La suma de VRAM supera el límite.",
+    }
+
+    veredicto, sugerencias = check_models.veredicto_y_sugerencias(
+        faltantes=[],
+        perfiles=perfiles,
+        embeddings=None,
+        config={
+            "hardware": {
+                "min_tokens_per_second": 8,
+                "comfortable_tokens_per_second": 20,
+                "min_router_tokens_per_second": 20,
+            }
+        },
+        gpu=_gpu(),
+        ram={"percent": 50},
+        cargados=[],
+        residencia=residencia,
+    )
+
+    assert veredicto.startswith("AJUSTADO")
+    assert any("num_gpu: 0" in sugerencia for sugerencia in sugerencias)
+    assert any("mismo modelo" in sugerencia for sugerencia in sugerencias)

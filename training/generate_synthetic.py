@@ -238,6 +238,7 @@ def generar(
         host_ollama(config),
         timeout=float((config.get("ollama") or {}).get("request_timeout_seconds", 180)),
         keep_alive=str((config.get("ollama") or {}).get("keep_alive", "30m")),
+        think=bool((config.get("ollama") or {}).get("think", False)),
     )
     opciones_base = dict(
         ((config.get("ollama") or {}).get("options") or {}).get("primary") or {}

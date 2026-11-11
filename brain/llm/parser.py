@@ -31,6 +31,12 @@ class ParseError(ValueError):
     """La respuesta no se pudo interpretar como un NitshioResponse válido."""
 
 
+FALLBACK_WARNING = (
+    "ADVERTENCIA: el modelo no devolvió un JSON válido; se usó la respuesta "
+    "de emergencia (fallback). Ejecuta con --debug para ver la respuesta cruda."
+)
+
+
 class NitshioResponse(BaseModel):
     """Formato exacto que debe devolver el modelo de personalidad."""
 

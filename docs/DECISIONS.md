@@ -33,6 +33,8 @@ quedan diseñados para los requisitos actuales.
 
 ## D-003 — Phi-3.5 como modelo principal y qwen3.5:0.8b como router
 
+> **Superada por D-020 (2026-11-11).** Se conserva como registro histórico.
+
 **Contexto:** el requisito pide Phi-3.5 mini como base del fine-tune y un router
 pequeño. Ambos ya están disponibles en Ollama (Phi-3.5 hay que descargarlo).
 
@@ -281,3 +283,36 @@ entrenar muestra el comando y abre el notebook de Kaggle/Colab; no lanza
 **Consecuencias:** la UI es segura y rápida en la máquina local. El coste real
 de entrenamiento queda en la nube y el GGUF se integra después con
 `ollama create`.
+
+---
+
+## D-020 — Migración a Qwen3.5-2B y apagado explícito de razonamiento
+
+**Contexto:** Phi-3.5 daba una personalidad irregular y la migración a
+Qwen3.5-2B busca mejor español, mejor seguimiento de instrucciones y un tamaño
+que quepa en los 4 GB de la T1200. Qwen3.5 puede devolver una cadena de
+pensamiento (`thinking`/`reasoning`) que rompería el JSON de personalidad.
+
+**Decisión:**
+
+- `ollama.models.base` y `training.base_model` apuntan a `qwen3.5:2b`;
+  `training.hf_model` a `Qwen/Qwen3.5-2B`. `ollama.models.active` es
+  `nitshio-qwen2b`.
+- `ollama.think: false` se envía siempre en `/api/chat`; el cliente descarta
+  `thinking`, `reasoning` y `reasoning_content` antes de parsear o medir.
+- `ollama.models.base_family: "qwen"` decide el Modelfile: la familia `phi` y
+  los GGUF cargados con `--gguf` conservan `TEMPLATE` y stops de Phi; Qwen usa
+  la plantilla nativa de Ollama.
+- La personalidad de runtime baja a `nitshio_short.md` (200–300 tokens
+  estimados) y 4 few-shots variados en `few_shots_short.jsonl`; los archivos
+  largos anteriores se conservan para rollback.
+- `build_model.py --output` permite generar `models/Modelfile.qwen2b` sin
+  sobrescribir el borrador GGUF `models/Modelfile`.
+- Si el JSON se agota tras los reintentos, el CLI imprime un aviso explícito y
+  `--debug` muestra las respuestas crudas.
+
+**Consecuencias:** el pipeline deja de depender de Phi-3.5 y el contexto 2048
+tiene margen para persona, few-shots e historial. La convivencia del modelo
+principal y el router se mide con `check_models.py`; si no caben juntos, la
+alternativa recomendada es `num_gpu: 0` para el router o usar el mismo modelo
+como router.

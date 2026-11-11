@@ -3,6 +3,117 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Cada entrada debe indicar fecha, qué cambió, por qué y archivos afectados.
 
+## [0.4.0] — 2026-11-11
+
+### Añadido
+
+- **Fase 0 de la migración a Qwen3.5-2B:** `ollama.models.base` apunta a
+  `qwen3.5:2b`, `base_family` a `qwen` y la versión activa a
+  `nitshio-qwen2b`. **Por qué:** dejar el pipeline listo para el fine-tune
+  sobre Qwen sin cambiar el resto de la arquitectura.
+- **`ollama.think: false`** en `config/config.yaml`: el cliente envía
+  `"think": false` en `/api/chat` y descarta `thinking`, `reasoning` y
+  `reasoning_content` antes de parsear o medir. **Por qué:** Qwen3.5 puede
+  devolver razonamiento y romper el contrato JSON de personalidad.
+- **Persona corta activa** `brain/persona/nitshio_short.md` (200–300 tokens) y
+  `brain/persona/few_shots_short.jsonl` (4 ejemplos variados). **Por qué:** el
+  prompt largo de Phi y sus 14 few-shots producían copia literal; la persona
+  breve define identidad, doble fachada tsundere, primera persona, formato JSON
+  y guía de emociones sin la sección «Ejemplos de tono».
+- **Aviso de fallback** en `pipeline/text.py`, `scripts/chat_cli.py` y `run.py`
+  (texto y voz): se imprime un mensaje claro por `stderr` cuando el JSON es
+  inválido y la respuesta cruda con `--debug`.
+- **Medición de residencia simultánea** en `scripts/check_models.py`: comprueba
+  si el modelo principal y el router caben juntos en VRAM y sugiere
+  alternativas.
+- **Evaluación de la migración** en
+  `training/eval/reports/eval_20261111_115248.{md,json}`: `nitshio-qwen2b`
+  0.6695 frente a `nitshio-v1` 0.7192 con los mismos 18 prompts, 100 % de JSON
+  válido y 33.1 tok/s frente a 13.7.
+- **Tests nuevos:** cobertura de `think=false`, descarte de razonamiento,
+  familia `qwen` en el Modelfile, persona corta, aviso de fallback y residencia
+  de VRAM (`tests/test_text_pipeline.py` y ampliaciones en la suite).
+
+### Cambiado
+
+- **`training/build_model.py` y `models/Modelfile.template`:** el `TEMPLATE` y
+  los `stop` de Phi solo se emiten cuando `base_family` es `phi` o cuando se
+  usa `--gguf` con plantilla explícita. Para Qwen, Ollama usa su renderer y
+  parser nativos. El Modelfile activo generado es `models/Modelfile.qwen2b`.
+- **Dry-runs de entrenamiento:** `finetune_qlora.py` y `export_gguf.py`
+  reportan `Qwen/Qwen3.5-2B` como base y `q4_K_M` como cuantización (348
+  ejemplos → 312 train / 36 val).
+- **Registro de versiones:** `models/versions.json` marca `nitshio-qwen2b`
+  como activo, conserva `nitshio-v1` como anterior y registra `nitshio-v2`
+  como GGUF de Phi-3.5 (`type=gguf`), que no es la versión Qwen pendiente.
+- **Router en CPU documentado:** `config/config.yaml` incluye `num_gpu: 0`
+  comentado para el router. **Por qué:** en 4 GB, `qwen3.5:2b` ocupa
+  1808/2793 MB en GPU y deja ~985 MB en RAM; con `qwen3.5:0.8b` (544 MB) no
+  caben completos a la vez.
+
+### Corregido
+
+- La documentación ya no afirma que `nitshio-v2` no se generó: existe como GGUF
+  de Phi-3.5 y falta reentrenarlo sobre Qwen3.5-2B.
+- El modo voz muestra el aviso de fallback y, con `--debug`, las respuestas
+  crudas, igual que el modo texto.
+- Los ejemplos de few-shots activos no se copian literalmente porque el SYSTEM
+  ya no incluye la sección «Ejemplos de tono».
+
+### Verificado
+
+- `pytest`: **275 tests en verde**.
+- `scripts/check_models.py`: activo 29.3 tok/s, base 31.4 tok/s, router
+  101.7 tok/s, embeddings 0.23 s/768 dims; los modelos no co-residen completos.
+- `training/evaluate.py`: 18 prompts, embeddings reales, sin juez; reporte y
+  métricas adjuntos.
+- `python scripts/check_docs.py`: changelog y documentos obligatorios al día.
+
+### Documentación
+
+- `README.md`, `docs/PLAN.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`,
+  `docs/TRAINING.md` y `docs/TROUBLESHOOTING.md` actualizados con el estado de
+  Qwen3.5-2B, `think=false`, la limitación de VRAM y el estado real de
+  `nitshio-v2`.
+
+### Archivos afectados
+
+- `config/config.yaml`
+- `brain/llm/ollama_client.py`
+- `brain/llm/orchestrator.py`
+- `brain/llm/parser.py`
+- `brain/persona/nitshio_short.md`
+- `brain/persona/few_shots_short.jsonl`
+- `pipeline/text.py`
+- `run.py`
+- `scripts/chat_cli.py`
+- `scripts/check_models.py`
+- `scripts/test_voice_roundtrip.py`
+- `training/build_model.py`
+- `training/evaluate.py`
+- `training/generate_synthetic.py`
+- `training/service.py`
+- `training/eval/reports/eval_20261111_115248.md`
+- `training/eval/reports/eval_20261111_115248.json`
+- `models/Modelfile.template`
+- `models/Modelfile.qwen2b`
+- `models/Modelfile`
+- `models/Modelfile.slim`
+- `models/versions.json`
+- `tests/test_ollama_client.py`
+- `tests/test_orchestrator.py`
+- `tests/test_persona.py`
+- `tests/test_training_build_model.py`
+- `tests/test_check_models.py`
+- `tests/test_text_pipeline.py`
+- `README.md`
+- `docs/PLAN.md`
+- `docs/ARCHITECTURE.md`
+- `docs/DECISIONS.md`
+- `docs/TRAINING.md`
+- `docs/TROUBLESHOOTING.md`
+- `docs/CHANGELOG.md`
+
 ## [0.3.0] — 2026-11-08
 
 ### Añadido

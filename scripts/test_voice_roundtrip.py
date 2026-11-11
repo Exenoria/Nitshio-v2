@@ -236,6 +236,7 @@ def _crear_cliente(config: dict[str, Any]) -> OllamaClient:
         host_ollama(config),
         timeout=float(ollama_cfg.get("request_timeout_seconds", 180)),
         keep_alive=str(ollama_cfg.get("keep_alive", "30m")),
+        think=bool(ollama_cfg.get("think", False)),
     )
 
 

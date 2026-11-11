@@ -7,6 +7,7 @@ import sys
 from typing import Any, Callable
 
 from brain.llm.orchestrator import Orchestrator, TurnResult
+from brain.llm.parser import FALLBACK_WARNING
 
 
 class TextPipeline:
@@ -28,6 +29,8 @@ class TextPipeline:
 
     def imprimir(self, resultado: TurnResult) -> None:
         print(f"Nitshio [{resultado.emotion}]: {resultado.response}")
+        if resultado.parsed.fallback:
+            print(FALLBACK_WARNING, file=sys.stderr)
         if self.debug:
             print(
                 f"  [intentos={resultado.attempts} "
@@ -36,6 +39,8 @@ class TextPipeline:
                 f"herramientas={[c.tool for c in resultado.tool_calls]}]",
                 file=sys.stderr,
             )
+            for indice, crudo in enumerate(resultado.raw_responses, start=1):
+                print(f"  [crudo {indice}] {crudo[:500]}", file=sys.stderr)
             if resultado.memory_context:
                 print(
                     f"  [memoria] {resultado.memory_context[:500]}",

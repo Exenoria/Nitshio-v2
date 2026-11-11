@@ -191,6 +191,19 @@ def test_turno_basico_actualiza_todo() -> None:
     assert cliente.llamadas[0]["retries"] == 1
 
 
+def test_turn_result_incluye_respuestas_crudas() -> None:
+    crudo = '{"response": "No me importa.", "emotion": "angry"}'
+    parsed = ParsedResponse(
+        data=NitshioResponse(response="No me importa.", emotion="angry"),
+        raw=crudo,
+    )
+    orquestador = Orchestrator(_config(), _persona(), ClienteFalso([parsed]))
+
+    resultado = orquestador.process("hola")
+
+    assert resultado.raw_responses == [crudo]
+
+
 def test_mensaje_vacio_falla() -> None:
     orquestador = Orchestrator(_config(), _persona(), ClienteFalso())
     with pytest.raises(ValueError, match="vacío"):

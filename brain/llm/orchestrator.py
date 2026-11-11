@@ -34,6 +34,7 @@ class TurnResult:
     tool_results: list[ToolResult] = field(default_factory=list)
     memory_context: str = ""
     history: list[dict[str, str]] = field(default_factory=list)
+    raw_responses: list[str] = field(default_factory=list)
 
 
 class Orchestrator:
@@ -223,6 +224,7 @@ class Orchestrator:
             tool_results=resultados,
             memory_context=contexto_memoria,
             history=self.history,
+            raw_responses=list(resultado.raw_responses),
         )
 
     def process_with_retry(

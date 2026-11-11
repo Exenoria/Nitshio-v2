@@ -1,6 +1,6 @@
 {
-  "active": "nitshio-v1",
-  "previous_active": null,
+  "active": "nitshio-qwen2b",
+  "previous_active": "nitshio-v1",
   "versions": [
     {
       "name": "nitshio-v1",
@@ -22,10 +22,68 @@
           "personality_mean": null,
           "composite_score": 0.5452,
           "similarity_backend": "embeddings"
-        }
+        },
+        "evaluation_persona_breve": {
+          "count": 18,
+          "json_valid_rate": 1.0,
+          "emotion_accuracy": 0.6111,
+          "similarity_mean": 0.6598,
+          "length_mean": 172.9,
+          "latency_mean_seconds": 10.431,
+          "tokens_per_second_mean": 13.74,
+          "personality_mean": null,
+          "composite_score": 0.7192,
+          "similarity_backend": "embeddings"
+        },
+        "evaluation_persona_breve_report": "training/eval/reports/eval_20261111_115248.md"
       },
       "notes": "Modelo construido desde Modelfile.",
-      "metrics_updated_at": "2026-11-09T05:14:30.639597+00:00"
+      "metrics_updated_at": "2026-11-11T11:54:22.905241+00:00"
+    },
+    {
+      "name": "nitshio-v2",
+      "base": "phi3.5:3.8b-mini-instruct-q4_K_M",
+      "type": "gguf",
+      "created_at": "2026-11-11T02:59:56.548856+00:00",
+      "updated_at": "2026-11-11T02:59:56.548856+00:00",
+      "persona_sha256": "d8197736624dfa24d2e6c97043aa73212560fdcfd5d108102d5f6b9b3e488406",
+      "few_shots": 14,
+      "modelfile_sha256": "92cca4bdb1fab203d78bb7dcf90a2bc56a1049cde81b500be21ad2b448a09773",
+      "gguf_path": "C:\\Users\\x\\Nitshio\\models\\nitshio-v2\\nitshio-q4_K_M.gguf",
+      "notes": "Modelo GGUF local.",
+      "metrics": null
+    },
+    {
+      "name": "nitshio-qwen2b",
+      "base": "qwen3.5:2b",
+      "type": "modelfile",
+      "created_at": "2026-11-11T11:47:42.718459+00:00",
+      "updated_at": "2026-11-11T11:47:42.718459+00:00",
+      "persona_sha256": "b674472bbfe3c9f839f78b0d76c378abb7a2d59332802909ce5449c843b7d791",
+      "few_shots": 4,
+      "modelfile_sha256": "58e117d8410b24b5ddbf401b927114952fe484fc77d6266516af1262d8ffeb45",
+      "notes": "Modelo construido desde Modelfile.",
+      "metrics": {
+        "evaluation": {
+          "count": 18,
+          "json_valid_rate": 1.0,
+          "emotion_accuracy": 0.4444,
+          "similarity_mean": 0.673,
+          "length_mean": 118.7,
+          "latency_mean_seconds": 2.74,
+          "tokens_per_second_mean": 33.1,
+          "personality_mean": null,
+          "composite_score": 0.6695,
+          "similarity_backend": "embeddings"
+        },
+        "evaluation_report": "training/eval/reports/eval_20261111_115248.md",
+        "evaluation_prompts": 18,
+        "evaluation_judge": false,
+        "evaluation_persona": "nitshio_short.md + few_shots_short.jsonl"
+      },
+      "status": "active",
+      "activated_at": "2026-11-11T11:47:43.192163+00:00",
+      "metrics_updated_at": "2026-11-11T11:54:22.895395+00:00"
     }
   ]
 }

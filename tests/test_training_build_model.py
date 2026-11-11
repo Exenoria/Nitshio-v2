@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from brain.config import cargar_config
 from brain.persona.loader import cargar_persona
-from training.build_model import main, registrar_version, render_modelfile
+from training.build_model import (
+    familia_base,
+    main,
+    registrar_version,
+    render_modelfile,
+)
 from training.versions import load_registry
 
 
@@ -90,3 +96,64 @@ def test_main_gguf_extension_incorrecta(tmp_path: Path, capsys) -> None:
 
     assert codigo == 1
     assert "no es .gguf" in capsys.readouterr().err
+
+
+def test_familia_base_qwen() -> None:
+    config = cargar_config()
+    assert familia_base(config) == "qwen"
+
+
+def test_modelfile_qwen_omite_template_y_stops_phi() -> None:
+    config = cargar_config()
+    persona = cargar_persona(config)
+    modelfile = render_modelfile(config, persona)
+
+    assert f"FROM {config['ollama']['models']['base']}" in modelfile
+    assert not any(
+        linea.startswith("TEMPLATE") for linea in modelfile.splitlines()
+    )
+    assert not any(
+        linea.startswith("PARAMETER stop") for linea in modelfile.splitlines()
+    )
+    assert "PHI_TEMPLATE" in modelfile  # solo en el comentario explicativo
+    assert "MESSAGE user" in modelfile
+
+
+def test_modelfile_phi_conserva_template_y_stops() -> None:
+    config = copy.deepcopy(cargar_config())
+    config["ollama"]["models"]["base_family"] = "phi"
+    persona = cargar_persona(config)
+    modelfile = render_modelfile(config, persona)
+
+    assert any(
+        linea.startswith('TEMPLATE """') for linea in modelfile.splitlines()
+    )
+    assert modelfile.count("PARAMETER stop") == 4
+    assert "# >>> PHI_TEMPLATE" not in modelfile
+    assert "# <<< PHI_TEMPLATE" not in modelfile
+
+
+def test_main_output_no_sobrescribe_default(tmp_path: Path) -> None:
+    salida = tmp_path / "Modelfile.qwen2b"
+    versions = tmp_path / "versions.json"
+
+    codigo = main(
+        [
+            "--version",
+            "nitshio-test-output",
+            "--output",
+            str(salida),
+            "--versions-file",
+            str(versions),
+        ]
+    )
+
+    assert codigo == 0
+    assert salida.exists()
+    contenido = salida.read_text(encoding="utf-8")
+    assert "FROM qwen3.5:2b" in contenido
+    assert not any(
+        linea.startswith("TEMPLATE") for linea in contenido.splitlines()
+    )
+    data = load_registry(versions)
+    assert data["versions"][0]["name"] == "nitshio-test-output"

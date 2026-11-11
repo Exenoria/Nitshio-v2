@@ -39,17 +39,21 @@ class StructuredChatResult:
 class OllamaClient:
     """Cliente HTTP mínimo para la API local de Ollama."""
 
+    _CAMPOS_RAZONAMIENTO = ("thinking", "reasoning", "reasoning_content")
+
     def __init__(
         self,
         host: str = "http://localhost:11434",
         *,
         timeout: float = 180.0,
         keep_alive: str = "30m",
+        think: bool = False,
         session: requests.Session | None = None,
     ) -> None:
         self.host = host.rstrip("/")
         self.timeout = timeout
         self.keep_alive = keep_alive
+        self.think = bool(think)
         self.session = session or requests.Session()
 
     # ------------------------------------------------------------------
@@ -85,15 +89,21 @@ class OllamaClient:
         *,
         schema: dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
-        think: bool = False,
+        think: bool | None = None,
         keep_alive: str | None = None,
     ) -> dict[str, Any]:
-        """Llama a ``/api/chat`` y devuelve la respuesta cruda de Ollama."""
+        """Llama a ``/api/chat`` y devuelve la respuesta sin razonamiento.
+
+        ``think`` por defecto usa ``ollama.think`` de la configuración. El
+        campo se envía siempre explícitamente para que Qwen3.5 no mezcle su
+        cadena de pensamiento con el JSON de personalidad.
+        """
+        pensar = self.think if think is None else bool(think)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "think": think,
+            "think": pensar,
             "keep_alive": keep_alive or self.keep_alive,
             "options": options or {},
         }
@@ -119,11 +129,39 @@ class OllamaClient:
 
         if data.get("error"):
             raise OllamaError(f"Ollama devolvió un error: {data['error']}")
-        return data
+        return self._sin_razonamiento(data)
+
+    @classmethod
+    def _sin_razonamiento(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Copia la respuesta sin campos de pensamiento de Qwen3.5.
+
+        Aunque ``think`` esté desactivado, algunas versiones de Ollama pueden
+        devolver ``thinking``/``reasoning``. El pipeline solo debe ver el
+        contenido final, así que esos campos se descartan antes de llegar al
+        parser o a las métricas.
+        """
+        limpio = {
+            clave: valor
+            for clave, valor in data.items()
+            if clave not in cls._CAMPOS_RAZONAMIENTO
+        }
+        mensaje = limpio.get("message")
+        if isinstance(mensaje, dict):
+            limpio["message"] = {
+                clave: valor
+                for clave, valor in mensaje.items()
+                if clave not in cls._CAMPOS_RAZONAMIENTO
+            }
+        return limpio
 
     @staticmethod
     def _contenido(data: dict[str, Any]) -> str:
-        """Extrae el texto de una respuesta de chat o generate."""
+        """Extrae el texto final de una respuesta de chat o generate.
+
+        Nunca usa campos de razonamiento como ``thinking`` o ``reasoning``:
+        si el modelo solo devolvió pensamiento, el parser lo tratará como
+        respuesta vacía y activará el fallback con aviso.
+        """
         mensaje = data.get("message")
         if isinstance(mensaje, dict) and "content" in mensaje:
             return str(mensaje.get("content", ""))
@@ -164,6 +202,7 @@ class OllamaClient:
                 historial,
                 schema=schema,
                 options=options,
+                think=self.think,
             )
             ultimo_data = data
             crudo = self._contenido(data)

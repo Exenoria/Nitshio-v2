@@ -3,19 +3,22 @@
 
 Ejemplos:
     python training/build_model.py --version nitshio-v1 --create --activate
+    python training/build_model.py --version nitshio-qwen2b --output models/Modelfile.qwen2b
     python training/build_model.py --version nitshio-v2 --print
     python training/build_model.py --version nitshio-v2 --gguf models/nitshio-v2.gguf --create
     python training/build_model.py --version nitshio-v3 --create
 
 El script valida los few-shots antes de compilar y no hardcodea modelos: el
-modelo base y los parámetros se leen de ``config/config.yaml``. Con ``--gguf``
-el ``FROM`` apunta a un GGUF local y la versión se registra con ``type=gguf``.
+modelo base, la familia y los parámetros se leen de ``config/config.yaml``.
+Con ``--gguf`` el ``FROM`` apunta a un GGUF local, se conserva la plantilla de
+Phi y la versión se registra con ``type=gguf``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +64,47 @@ def _from_value(valor: str) -> str:
     return ruta
 
 
+def familia_base(config: dict[str, Any]) -> str:
+    """Devuelve la familia declarada en ``ollama.models.base_family``.
+
+    Si la clave no existe se asume ``phi`` para no romper configuraciones
+    antiguas. La familia decide si se conservan el TEMPLATE y los stop de Phi.
+    """
+    modelos = (config.get("ollama") or {}).get("models") or {}
+    return str(modelos.get("base_family", "phi")).strip().lower()
+
+
+def _resolver_bloque(render: str, nombre: str, *, incluir: bool) -> str:
+    """Conserva o elimina un bloque del template delimitado por marcadores.
+
+    Los marcadores tienen la forma ``# >>> NOMBRE`` / ``# <<< NOMBRE``. Al
+    conservar el bloque se quitan los comentarios; al eliminarlo se quita todo
+    el contenido, incluidos los marcadores.
+    """
+    if incluir:
+        patron = re.compile(
+            rf"(?m)^[ \t]*# (?:>>>|<<<) {re.escape(nombre)}[ \t]*\n"
+        )
+        return patron.sub("", render)
+    patron = re.compile(
+        rf"(?ms)^[ \t]*# >>> {re.escape(nombre)}[ \t]*\n"
+        rf".*?^[ \t]*# <<< {re.escape(nombre)}[ \t]*(?:\n|$)"
+    )
+    return patron.sub("", render)
+
+
+def _usar_plantilla_phi(config: dict[str, Any], base_override: str | None) -> bool:
+    """Indica si el Modelfile debe llevar TEMPLATE/stop de Phi.
+
+    Los GGUF locales conservan la plantilla Phi por compatibilidad con los
+    modelos ya exportados. Para tags, la decisión depende de la familia
+    configurada: solo ``phi*`` incluye la plantilla.
+    """
+    if base_override and Path(base_override).suffix.lower() == ".gguf":
+        return True
+    return familia_base(config).startswith("phi")
+
+
 def render_modelfile(
     config: dict[str, Any],
     persona: Any,
@@ -71,8 +115,8 @@ def render_modelfile(
     """Renderiza el Modelfile completo a partir de config y persona.
 
     ``base_override`` permite sustituir el tag base por la ruta de un GGUF
-    local sin tocar el resto del template (SYSTEM, TEMPLATE Phi-3.5,
-    parámetros y MESSAGE).
+    local. Los bloques PHI_TEMPLATE y PHI_STOPS solo se conservan si la familia
+    configurada es ``phi`` o si ``base_override`` es un ``.gguf``.
     """
     ruta_template = Path(template_path) if template_path else DEFAULT_TEMPLATE
     if not ruta_template.exists():
@@ -93,10 +137,6 @@ def render_modelfile(
     for clave in ("temperature", "top_p", "repeat_penalty", "num_ctx", "num_predict"):
         if clave in opciones:
             lineas_parametros.append(f"PARAMETER {clave} {opciones[clave]}")
-    # Stops del formato Phi-3.5. Se declaran siempre para que el modelo no se
-    # salga de su turno.
-    for stop in ("<|system|>", "<|user|>", "<|end|>", "<|assistant|>"):
-        lineas_parametros.append(f'PARAMETER stop "{stop}"')
 
     mensajes: list[str] = []
     for ejemplo in persona.few_shots:
@@ -108,6 +148,10 @@ def render_modelfile(
     render = render.replace("__SYSTEM__", system)
     render = render.replace("__PARAMETERS__", "\n".join(lineas_parametros))
     render = render.replace("__MESSAGES__", "\n".join(mensajes))
+
+    incluir_phi = _usar_plantilla_phi(config, base_override)
+    for bloque in ("PHI_TEMPLATE", "PHI_STOPS"):
+        render = _resolver_bloque(render, bloque, incluir=incluir_phi)
     return render
 
 
@@ -194,10 +238,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Imprime el Modelfile en vez de escribirlo.",
     )
     parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help=(
+            "Ruta del Modelfile generado (default: models/Modelfile). "
+            "Úsala para no sobrescribir borradores locales."
+        ),
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
         help="Ruta alternativa a config.yaml.",
+    )
+    parser.add_argument(
+        "--versions-file",
+        type=Path,
+        default=VERSIONS_FILE,
+        help="Registro de versiones alternativo (útil para pruebas).",
     )
     parser.add_argument(
         "--dataset",
@@ -261,8 +320,14 @@ def main(argv: list[str] | None = None) -> int:
         print(modelfile)
         return 0
 
-    DEFAULT_OUTPUT.write_text(modelfile, encoding="utf-8")
-    print(f"Modelfile escrito en {DEFAULT_OUTPUT}")
+    output_path = (
+        args.output
+        if args.output.is_absolute()
+        else ROOT / args.output
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(modelfile, encoding="utf-8")
+    print(f"Modelfile escrito en {output_path}")
 
     try:
         registrar_version(
@@ -275,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             notes=args.notes,
             version_type=version_type,
             gguf_path=gguf_path,
+            versions_file=args.versions_file,
         )
     except (OSError, VersionError) as exc:
         print(f"ERROR al registrar la versión: {exc}", file=sys.stderr)
@@ -283,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.create:
         try:
-            crear_en_ollama(args.version, DEFAULT_OUTPUT)
+            crear_en_ollama(args.version, output_path)
         except (OSError, RuntimeError) as exc:
             print(f"ERROR al crear el modelo: {exc}", file=sys.stderr)
             return 1

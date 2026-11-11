@@ -227,6 +227,168 @@ def modelos_cargados(ollama: Ollama) -> list[dict[str, Any]]:
     return resultado
 
 
+def _resumen_cargado(item: dict[str, Any]) -> dict[str, Any]:
+    """Convierte una entrada de ``/api/ps`` a MB y estado GPU/CPU."""
+    size = int(item.get("size", 0) or 0)
+    vram = int(item.get("size_vram", 0) or 0)
+    return {
+        "name": str(item.get("name", "?")),
+        "size_mb": round(size / (1024**2), 1),
+        "vram_mb": round(vram / (1024**2), 1),
+        "processor": "GPU" if vram > 0 else "CPU",
+        "en_gpu": bool(size > 0 and vram >= size * 0.95),
+    }
+
+
+def probar_residencia_simultanea(
+    ollama: Ollama,
+    modelos: dict[str, str],
+    *,
+    opciones: dict[str, dict[str, Any]] | None = None,
+    keep_alive: str,
+    gpu: dict[str, Any] | None,
+    max_vram_percent: float = 95.0,
+    think: bool = False,
+) -> dict[str, Any]:
+    """Carga los modelos a la vez y comprueba si caben juntos en VRAM.
+
+    ``modelos`` asocia rol -> tag (por ejemplo ``{"base": ..., "router": ...}``).
+    Se calienta cada modelo con su ``num_ctx`` configurado y luego se lee
+    ``/api/ps``. La medida es real: si Ollama descarga uno para cargar el otro,
+    ``cargados_juntos`` será falso y el veredicto propondrá alternativas.
+    """
+    unicos: list[str] = []
+    for modelo in modelos.values():
+        if modelo and modelo not in unicos:
+            unicos.append(modelo)
+    residencia: dict[str, Any] = {
+        "roles": dict(modelos),
+        "modelos": [],
+        "combinado_vram_mb": 0.0,
+        "combinado_ram_mb": 0.0,
+        "cargados_juntos": False,
+        "caben_juntos": False,
+        "vram_total_mb": int(gpu["vram_total_mb"]) if gpu else None,
+        "vram_libre_mb": (
+            max(0, int(gpu["vram_total_mb"]) - int(gpu["vram_used_mb"]))
+            if gpu
+            else None
+        ),
+        "limite_mb": None,
+        "motivo": "",
+    }
+    if not unicos:
+        residencia["motivo"] = "No hay modelos configurados para comparar."
+        return residencia
+
+    # Calienta con el contexto real de cada rol; num_predict=1 evita generar
+    # texto innecesario, pero mantiene reservada la KV cache configurada.
+    for rol, modelo in modelos.items():
+        if not modelo:
+            continue
+        opciones_modelo = dict((opciones or {}).get(rol, {}))
+        opciones_modelo["num_predict"] = 1
+        opciones_modelo.setdefault("temperature", 0)
+        try:
+            ollama.generate(
+                modelo,
+                "Responde solo: OK",
+                options=opciones_modelo,
+                keep_alive=keep_alive,
+                think=think,
+            )
+        except OllamaError as exc:
+            residencia["motivo"] = (
+                f"No se pudo cargar {modelo!r} para la prueba simultánea: {exc}"
+            )
+            return residencia
+
+    cargados = {
+        _normalizar_tag(str(item.get("name", ""))): item
+        for item in ollama.loaded()
+    }
+    entradas: list[dict[str, Any]] = []
+    for modelo in unicos:
+        item = cargados.get(_normalizar_tag(modelo))
+        if item is None:
+            entradas.append(
+                {
+                    "name": modelo,
+                    "size_mb": 0.0,
+                    "vram_mb": 0.0,
+                    "processor": "no cargado",
+                    "en_gpu": False,
+                    "roles": [
+                        rol for rol, tag in modelos.items() if tag == modelo
+                    ],
+                }
+            )
+            continue
+        resumen = _resumen_cargado(item)
+        resumen["roles"] = [
+            rol for rol, tag in modelos.items() if tag == modelo
+        ]
+        entradas.append(resumen)
+
+    combinado_vram = sum(float(item["vram_mb"]) for item in entradas)
+    combinado_ram = sum(
+        max(0.0, float(item["size_mb"]) - float(item["vram_mb"]))
+        for item in entradas
+    )
+    cargados_juntos = all(
+        item["processor"] != "no cargado" for item in entradas
+    )
+    en_gpu = all(bool(item.get("en_gpu")) for item in entradas)
+
+    residencia["modelos"] = entradas
+    residencia["combinado_vram_mb"] = round(combinado_vram, 1)
+    residencia["combinado_ram_mb"] = round(combinado_ram, 1)
+    residencia["cargados_juntos"] = cargados_juntos
+
+    if gpu:
+        total = int(gpu["vram_total_mb"])
+        libre = max(0, total - int(gpu["vram_used_mb"]))
+        limite = min(total * max_vram_percent / 100.0, float(libre))
+        residencia["limite_mb"] = round(limite, 1)
+        caben = (
+            cargados_juntos
+            and en_gpu
+            and combinado_vram <= limite
+        )
+        residencia["caben_juntos"] = caben
+        if not cargados_juntos:
+            residencia["motivo"] = (
+                "Ollama no mantuvo ambos modelos cargados a la vez; el segundo "
+                "probablemente expulsó al primero."
+            )
+        elif not en_gpu:
+            parciales = [
+                f"{item['name']} ({item['vram_mb']:.0f}/{item['size_mb']:.0f} MB)"
+                for item in entradas
+                if not item.get("en_gpu")
+            ]
+            residencia["motivo"] = (
+                "Uno o ambos modelos están parcialmente en CPU: "
+                + ", ".join(parciales)
+                + "."
+            )
+        elif not caben:
+            residencia["motivo"] = (
+                f"La suma de VRAM ({combinado_vram:.0f} MB) supera el límite "
+                f"disponible ({limite:.0f} MB)."
+            )
+        else:
+            residencia["motivo"] = (
+                f"Caben juntos: {combinado_vram:.0f} MB de {limite:.0f} MB "
+                "disponibles."
+            )
+    else:
+        residencia["motivo"] = (
+            "No hay GPU NVIDIA visible; ambos modelos se cargarían en CPU/RAM."
+        )
+    return residencia
+
+
 # ---------------------------------------------------------------------------
 # Pruebas de rendimiento
 # ---------------------------------------------------------------------------
@@ -262,6 +424,7 @@ def probar_modelo(
     options: dict[str, Any],
     keep_alive: str,
     validar_json: bool,
+    think: bool = False,
 ) -> dict[str, Any]:
     """Mide carga, latencia y tokens/s de un modelo con una petición real."""
     # Calentamiento: carga el modelo y deja lista la GPU. No se mide.
@@ -271,6 +434,7 @@ def probar_modelo(
         "Responde solo: OK",
         options={"num_predict": 4, "temperature": 0},
         keep_alive=keep_alive,
+        think=think,
     )
     wall_calentamiento = time.perf_counter() - t0
     load_ns = int(calentamiento.get("load_duration", 0) or 0)
@@ -283,6 +447,7 @@ def probar_modelo(
         format_schema=schema,
         options=options,
         keep_alive=keep_alive,
+        think=think,
     )
     wall = time.perf_counter() - t0
     texto = str(data.get("response", ""))
@@ -336,6 +501,7 @@ def imprimir_informe(
     cargados: list[dict[str, Any]],
     perfiles: list[dict[str, Any]],
     embeddings: dict[str, Any] | None,
+    residencia: dict[str, Any] | None,
     veredicto: str,
     sugerencias: list[str],
 ) -> None:
@@ -393,6 +559,30 @@ def imprimir_informe(
             f"{embeddings['latencia_s']:6.2f} s | "
             f"{embeddings['dimensiones']} dims"
         )
+    if residencia and residencia.get("modelos"):
+        print()
+        print("Residencia simultánea (modelo principal + router):")
+        for item in residencia["modelos"]:
+            roles = ", ".join(item.get("roles") or [])
+            print(
+                f"  - {item['name']:48s} {item['processor']:10s} "
+                f"{item['size_mb']:7.1f} MB ({item['vram_mb']:7.1f} MB VRAM)"
+                f"{f' [{roles}]' if roles else ''}"
+            )
+        estado = "SÍ" if residencia.get("caben_juntos") else "NO"
+        limite = residencia.get("limite_mb")
+        total = residencia.get("vram_total_mb")
+        extra = (
+            f" | combinado {residencia.get('combinado_vram_mb')} MB"
+            f" de {limite} MB disponibles"
+            if limite is not None
+            else ""
+        )
+        if total is not None:
+            extra += f" (VRAM total {total} MB)"
+        print(f"  ¿Caben juntos en VRAM? {estado}{extra}")
+        if residencia.get("motivo"):
+            print(f"  {residencia['motivo']}")
     print()
     print(f"VEREDICTO: {veredicto}")
     if sugerencias:
@@ -411,6 +601,7 @@ def veredicto_y_sugerencias(
     gpu: dict[str, Any] | None,
     ram: dict[str, Any],
     cargados: list[dict[str, Any]],
+    residencia: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     """Calcula el veredicto global y las alternativas más ligeras."""
     hw = config.get("hardware", {})
@@ -495,7 +686,41 @@ def veredicto_y_sugerencias(
             "`nvidia-smi` y la variable OLLAMA_GPU_OVERHEAD."
         )
 
-    if any(m["processor"] == "GPU" for m in cargados) and gpu:
+    if residencia and residencia.get("roles"):
+        cabe = bool(residencia.get("caben_juntos"))
+        if gpu and not cabe:
+            problemas.append(
+                "El modelo principal y el router no caben juntos en VRAM: "
+                + str(residencia.get("motivo") or "medición no concluyente.")
+            )
+            sugerencias.append(
+                "Ejecuta el router en CPU: añade `num_gpu: 0` a "
+                "`ollama.options.router` en config/config.yaml. Es la opción "
+                "que deja toda la VRAM al modelo de personalidad."
+            )
+            sugerencias.append(
+                "O usa el mismo modelo para router y principal: iguala "
+                "`ollama.models.router` a `ollama.models.active` y baja "
+                "`ollama.options.router.num_ctx`."
+            )
+            sugerencias.append(
+                "Si el modelo principal ya queda parcialmente en CPU, baja "
+                "`ollama.options.primary.num_ctx`, usa una cuantización menor "
+                "o añade `num_gpu: 99` a `ollama.options.primary` (con el "
+                "router en CPU)."
+            )
+        elif gpu and cabe:
+            sugerencias.append(
+                "El router y el modelo principal caben juntos en VRAM con el "
+                "contexto configurado; no hace falta mover el router a CPU."
+            )
+        elif not gpu:
+            sugerencias.append(
+                "Sin GPU visible, router y principal compartirán CPU/RAM. "
+                "Considera igualar `ollama.models.router` al modelo activo para "
+                "no cargar dos modelos distintos."
+            )
+    elif any(m["processor"] == "GPU" for m in cargados) and gpu:
         sugerencias.append(
             "En 4 GB de VRAM no mantengas router y modelo principal cargados a la "
             "vez; usa `OLLAMA_MAX_LOADED_MODELS=1` o un keep_alive corto."
@@ -538,6 +763,7 @@ def main(argv: list[str] | None = None) -> int:
     host = config["ollama"].get("host", "http://localhost:11434")
     timeout = float(config["ollama"].get("request_timeout_seconds", 180))
     keep_alive = str(config["ollama"].get("keep_alive", "5m"))
+    think = bool(config["ollama"].get("think", False))
     modelos = config["ollama"]["models"]
     emociones = cargar_emociones(config)
     ollama = Ollama(host, timeout)
@@ -603,8 +829,16 @@ def main(argv: list[str] | None = None) -> int:
 
     perfiles: list[dict[str, Any]] = []
     embeddings_info: dict[str, Any] | None = None
+    residencia: dict[str, Any] | None = None
 
     if not args.skip_perf and not faltantes_obligatorios:
+        # Punto de partida limpio: modelos de una ejecución anterior (o del
+        # evaluador) falsearían la VRAM disponible y la prueba simultánea.
+        for modelo in set(roles.values()):
+            parar_modelo(modelo)
+        time.sleep(1.0)
+        gpu = info_gpu() or gpu
+
         response_schema = {
             "type": "object",
             "properties": {
@@ -665,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
                         options=opciones_primary,
                         keep_alive=keep_alive,
                         validar_json=True,
+                        think=think,
                     )
                 )
             except OllamaError as exc:
@@ -690,12 +925,42 @@ def main(argv: list[str] | None = None) -> int:
                         options=opciones_router,
                         keep_alive=keep_alive,
                         validar_json=True,
+                        think=think,
                     )
                 )
             except OllamaError as exc:
                 print(f"ERROR midiendo router ({roles['router']}): {exc}")
             finally:
                 parar_modelo(roles["router"])
+
+        # Prueba clave en 4 GB: cargar principal y router a la vez y mirar
+        # /api/ps. Si Ollama expulsa uno, no caben juntos.
+        modelos_residencia = {
+            rol: roles[rol]
+            for rol in ("base", "router")
+            if roles.get(rol)
+        }
+        if modelos_residencia:
+            try:
+                residencia = probar_residencia_simultanea(
+                    ollama,
+                    modelos_residencia,
+                    opciones={
+                        "base": opciones_primary,
+                        "router": opciones_router,
+                    },
+                    keep_alive=keep_alive,
+                    gpu=gpu,
+                    max_vram_percent=float(
+                        config.get("hardware", {}).get("max_vram_percent", 95)
+                    ),
+                    think=think,
+                )
+            except OllamaError as exc:
+                print(f"ERROR midiendo residencia simultánea: {exc}")
+            finally:
+                for modelo in set(modelos_residencia.values()):
+                    parar_modelo(modelo)
 
         if roles.get("embeddings") and roles["embeddings"] not in faltantes:
             try:
@@ -707,6 +972,9 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 parar_modelo(roles["embeddings"])
 
+    # ``ollama stop`` es asíncrono; espera a que se libere la VRAM antes de
+    # fotografiar el estado final.
+    time.sleep(0.5)
     cargados = modelos_cargados(ollama)
     veredicto, sugerencias = veredicto_y_sugerencias(
         faltantes=faltantes_obligatorios,
@@ -716,6 +984,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu=gpu,
         ram=ram,
         cargados=cargados,
+        residencia=residencia,
     )
 
     if args.json:
@@ -727,6 +996,7 @@ def main(argv: list[str] | None = None) -> int:
             "hardware": {"gpu": gpu, "ram": ram, "cargados": cargados},
             "perfiles": perfiles,
             "embeddings": embeddings_info,
+            "residencia_simultanea": residencia,
             "veredicto": veredicto,
             "sugerencias": sugerencias,
         }
@@ -743,6 +1013,7 @@ def main(argv: list[str] | None = None) -> int:
             cargados=cargados,
             perfiles=perfiles,
             embeddings=embeddings_info,
+            residencia=residencia,
             veredicto=veredicto,
             sugerencias=sugerencias,
         )

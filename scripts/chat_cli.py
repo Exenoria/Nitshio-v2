@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 
 from brain.config import cargar_config, host_ollama
 from brain.llm.ollama_client import OllamaClient, OllamaError
+from brain.llm.parser import FALLBACK_WARNING
 from brain.persona.loader import (
     PersonaError,
     cargar_persona,
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         host_ollama(config),
         timeout=float(config["ollama"].get("request_timeout_seconds", 180)),
         keep_alive=str(config["ollama"].get("keep_alive", "30m")),
+        think=bool(config["ollama"].get("think", False)),
     )
 
     try:
@@ -128,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             return False
 
         parsed = resultado.parsed
+        if parsed.fallback:
+            print(FALLBACK_WARNING, file=sys.stderr)
         if args.json:
             print(
                 json.dumps(
@@ -138,15 +142,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"Nitshio [{parsed.data.emotion}]: {parsed.data.response}")
-            if args.debug:
-                print(
-                    f"  [intentos={resultado.attempts} "
-                    f"reparado={parsed.repaired} fallback={parsed.fallback} "
-                    f"texto_extra={parsed.extra_text}]",
-                    file=sys.stderr,
-                )
-                for i, crudo in enumerate(resultado.raw_responses, start=1):
-                    print(f"  [crudo {i}] {crudo[:500]}", file=sys.stderr)
+        if args.debug:
+            print(
+                f"  [intentos={resultado.attempts} "
+                f"reparado={parsed.repaired} fallback={parsed.fallback} "
+                f"texto_extra={parsed.extra_text}]",
+                file=sys.stderr,
+            )
+            for i, crudo in enumerate(resultado.raw_responses, start=1):
+                print(f"  [crudo {i}] {crudo[:500]}", file=sys.stderr)
 
         historial.append({"role": "user", "content": texto})
         historial.append(

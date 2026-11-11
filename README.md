@@ -1,4 +1,4 @@
-# Nitshio-v1
+# Nitshio
 
 LLM creado para ser una acompañante en mi escritorio. Nitshio es una waifu IA
 **100 % local** para Windows: personalidad tsundere en español
@@ -9,11 +9,14 @@ El cerebro, el STT, el TTS local, la memoria y el avatar funcionan sin internet.
 Solo necesitan red la búsqueda web, la reproducción de YouTube y el proveedor
 opcional Fish Audio.
 
-> **Estado actual:** Paso 2 (pipeline completo) **cerrado**. Paso 3
-> (entrenamiento) **implementado en local**: dataset combinado de 348 ejemplos,
-> generador sintético, evaluador, versionado, UI Gradio, notebook de Colab y
-> carga de GGUF con `--gguf` están probados. Falta la aceptación real en Colab
-> para producir `nitshio-v2` y compararlo contra `nitshio-v1`.
+> **Estado actual:** Fase 0 migrada de Phi-3.5 a **Qwen3.5-2B**;
+> `nitshio-qwen2b` está activo y evaluado con 18 prompts (score 0.6695 frente a
+> 0.7192 de `nitshio-v1`, pero con 33.1 tok/s frente a 13.7). `nitshio-v2` ya
+> existe como GGUF de Phi-3.5 registrado; falta reentrenarlo sobre Qwen3.5-2B y
+> cerrar la aceptación real en Colab. Paso 2 (pipeline completo) sigue
+> **cerrado** y el Paso 3 (entrenamiento) está **implementado en local**:
+> dataset combinado de 348 ejemplos, generador sintético, evaluador, versionado,
+> UI Gradio, notebook de Colab y carga de GGUF con `--gguf`.
 
 ## Requisitos
 
@@ -23,6 +26,8 @@ opcional Fish Audio.
   `config/config.yaml`.
 - **Opcional para voz:** VB-Cable, VSeeFace y un avatar `.vrm`.
 - **Opcional para canciones:** `ffplay` (viene con FFmpeg) en el `PATH`.
+  En 4 GB de VRAM, el router `qwen3.5:0.8b` y `qwen3.5:2b` no caben completos a
+  la vez; ver [Limitaciones conocidas](#limitaciones-conocidas).
 
 No se instala PyTorch CUDA local. La inferencia usa Ollama y ONNX Runtime CPU
 para Moonshine.
@@ -103,7 +108,7 @@ STT Moonshine + VAD (solo voz)
 Router qwen3.5:0.8b ──► herramienta (plugin) ──► resultado
       │
       ▼
-LLM de personalidad (nitshio-vN en Ollama)
+LLM de personalidad (nitshio-qwen2b en Ollama, think=false)
       │
       ├── memoria ChromaDB (RAG)
       ├── parser JSON + reintento + fallback
@@ -111,15 +116,45 @@ LLM de personalidad (nitshio-vN en Ollama)
       └── avatar VMC ──► VSeeFace
 ```
 
-- La personalidad vive en `brain/persona/nitshio.md` y los ejemplos en
-  `brain/persona/few_shots.jsonl`.
+- La personalidad de Qwen vive en `brain/persona/nitshio_short.md` (200–300
+  tokens) y sus 4 ejemplos en `brain/persona/few_shots_short.jsonl`. Los
+  archivos largos de Phi (`nitshio.md` y `few_shots.jsonl`) se conservan.
 - La salida del modelo es siempre
   `{"response": "...", "emotion": "..."}`; las emociones permitidas se leen de
   `config/emotions.yaml`.
+- `ollama.think: false` se envía en cada llamada y el cliente descarta
+  `thinking`/`reasoning` para que el razonamiento de Qwen no contamine el JSON.
+  Si el parser agota los reintentos, el CLI avisa y `--debug` muestra la
+  respuesta cruda.
 - Los nombres de modelo, rutas, dispositivos y herramientas están en
   `config/config.yaml`. **No hay nombres de modelo hardcodeados.**
 - Los secretos van en `.env` (ver `.env.example`), nunca en el YAML ni en el
   código.
+
+### Migración a Qwen3.5-2B (Fase 0)
+
+`nitshio-qwen2b` se creó desde `qwen3.5:2b` con `build_model.py --output
+models/Modelfile.qwen2b`. El Modelfile de Qwen **no** lleva `TEMPLATE` ni stops
+de Phi: Ollama usa la plantilla nativa del modelo. Los GGUF antiguos cargados
+con `--gguf` sí conservan la plantilla Phi.
+
+Evaluación real con los mismos 18 prompts, embeddings y sin juez
+(`training/eval/reports/eval_20261111_115248.md`):
+
+| Modelo | JSON | Emoción | Similitud | Latencia | Tok/s | Score |
+|---|---:|---:|---:|---:|---:|---:|
+| `nitshio-qwen2b` | 100% | 44.4% | 0.673 | 2.74 s | 33.1 | **0.6695** |
+| `nitshio-v1` (persona breve) | 100% | 61.1% | 0.660 | 10.43 s | 13.74 | **0.7192** |
+
+Qwen tiene ~3.8× menos latencia y 2.4× más tokens/s, y mejora la similitud,
+pero todavía falla más emociones que `nitshio-v1`; el fine-tune del Paso 3 queda
+pendiente. En hardware,
+`check_models.py` midió 29.3 tok/s en el activo y 101.7 tok/s en el router. La
+prueba simultánea no logró mantener ambos modelos **completos** en VRAM:
+`qwen3.5:2b` quedó parcialmente en CPU (1808/2793 MB) y el router ocupó 544 MB.
+Por eso el script recomienda `num_gpu: 0` en `ollama.options.router` o usar el
+mismo modelo como router; ver [DECISIONS.md](docs/DECISIONS.md) y
+[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Memoria
 
@@ -185,11 +220,13 @@ El notebook `training/cloud/Nitshio_QLoRA.ipynb` está preparado para Colab:
 descomprime el proyecto en `/content`, combina `seed.jsonl` con
 `nitshio_dataset_300.jsonl`, entrena con QLoRA y exporta el GGUF cuantizado.
 En local, `training/build_model.py --gguf` lo registra con `type=gguf` y lo
-activa. La primera comparación real (18 prompts, sin juez) dio score **0.5452**
-a `nitshio-v1` frente a **0.4289** del modelo base; el reporte está en
-`training/eval/reports/`. La calidad del texto todavía es baja y el fine-tune
-cloud sigue pendiente. El flujo completo, los comandos y el estado de
-aceptación están en [TRAINING.md](docs/TRAINING.md).
+activa. La comparación histórica de Phi (18 prompts, sin juez) dio **0.5452** a
+`nitshio-v1` frente a **0.4289** del base Phi-3.5. La migración a Qwen3.5-2B se
+evaluó después con el mismo set y la persona breve: `nitshio-qwen2b` **0.6695**
+frente a `nitshio-v1` **0.7192**, ambos con JSON válido al 100%. El reporte está
+en `training/eval/reports/eval_20261111_115248.md`. La calidad del texto todavía
+es irregular y el fine-tune cloud sobre Qwen sigue pendiente. El flujo completo,
+los comandos y el estado de aceptación están en [TRAINING.md](docs/TRAINING.md).
 
 ## Tests
 
@@ -200,7 +237,7 @@ aceptación están en [TRAINING.md](docs/TRAINING.md).
 
 La suite cubre configuración, parser, persona, cliente Ollama, router, memoria,
 herramientas, seguridad de archivos, VAD, STT/TTS, avatar, orquestador, pipeline
-de voz, micrófono, training y el propio `check_docs.py` (**255 tests**).
+de voz, micrófono, training y el propio `check_docs.py` (**275 tests**).
 
 ## Documentación
 
@@ -215,19 +252,24 @@ de voz, micrófono, training y el propio `check_docs.py` (**255 tests**).
 
 ## Limitaciones conocidas
 
-- El modelo activo rinde ~15.6 tok/s en la T1200 de 4 GB; es usable, pero
-  conviene mantener `num_ctx: 2048`.
-- La calidad de personalidad del modelo base todavía es irregular (tercera
-  persona, respuestas fuera de tono). Se ajustará con el fine-tune del Paso 3;
-  el parser y el formato JSON ya están validados.
+- El modelo activo rinde ~29.3 tok/s en la T1200 de 4 GB (base Qwen 31.4 tok/s,
+  router 101.7 tok/s); conviene mantener `num_ctx: 2048`.
+- En 4 GB de VRAM, `qwen3.5:2b` y el router `qwen3.5:0.8b` no caben completos a
+  la vez: el principal deja ~1 GB en RAM. Propuesta: mover el router a CPU con
+  `ollama.options.router.num_gpu: 0` (comentado en `config/config.yaml`) o usar
+  el mismo modelo como router.
+- La calidad de personalidad del modelo base todavía es irregular: acierta
+  44.4% de las emociones y el texto queda por debajo de `nitshio-v1` en el score
+  compuesto. Se ajustará con el fine-tune del Paso 3; el parser y el formato
+  JSON ya están validados.
 - La conversación humana por `--mode voice` queda como confirmación opcional:
   la cadena completa se prueba con `scripts/test_voice_roundtrip.py` y el
   micrófono real ya se validó por separado.
 - El lip-sync de VSeeFace requiere el **proveedor viejo** (“Usar el modelo viejo
   para lip sync”). Con el nuevo, el audio llega pero la boca no se mueve. Ver
   [VSeeFace](docs/VSEEFACE.md).
-- El fine-tune solo se ejecuta en Kaggle/Colab; la T1200 no entrena. El
-  pipeline local y los dry-runs están listos, pero `nitshio-v2` todavía no se
-  generó.
+- El fine-tune solo se ejecuta en Kaggle/Colab; la T1200 no entrena. `nitshio-v2`
+  ya se generó y está registrado como GGUF de Phi-3.5; falta reentrenarlo sobre
+  Qwen3.5-2B y cerrar su aceptación con el evaluador real.
 - La UI Gradio requiere instalar `requirements.txt` (incluye `gradio>=5,<7`).
 - Discord está previsto como adaptador opcional y aún no está conectado.
